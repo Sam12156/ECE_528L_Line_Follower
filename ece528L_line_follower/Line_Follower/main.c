@@ -30,12 +30,20 @@
 #include "inc/Timer_A1_Interrupt.h"
 #include "inc/SysTick_Interrupt.h"
 #include "inc/Reflectance_Sensor.h"
+#include "inc/Print_Binary.h"
+
+// Set to 1 to print the sensor data, position, and FSM state to the serial terminal
+// TODO: Set to 0 (or remove the debug code in main) before the demo, since the main while loop must be empty
+#define DEBUG_PRINT 1
 
 // Initialize constant PWM duty cycle values for the motors
 #define PWM_NOMINAL 2500
 
 // Initialize a global variable for Timer A1 to keep track of elapsed time in milliseconds
 static uint32_t Timer_A1_ms_elapsed = 0;
+
+
+
 
 // Number of consecutive 1111_1111b samples required before the T-intersection is accepted
 #define T_INTERSECTION_SAMPLES 3
@@ -69,7 +77,7 @@ typedef enum
 } Robot_State;
 
 // Current state of the Line Follower FSM
-static Robot_State current_state = MOVE_FORWARD;
+static volatile Robot_State current_state = MOVE_FORWARD;
 
 typedef enum
 {
@@ -206,7 +214,7 @@ void Timer_A1_Periodic_Task(void)
         // Count consecutive T-intersection samples
         if (Reflectance_Sensor_Data == T_INTERSECTION)
         {
-            if (t_intersection_count < 255)
+            if (t_intersection_count < T_INTERSECTION_SAMPLES)
             {
                 t_intersection_count++;
             }
@@ -216,7 +224,9 @@ void Timer_A1_Periodic_Task(void)
             t_intersection_count = 0;
         }
 
-        Timer_A1_ms_elapsed = 0;
+        // Note: Timer_A1_ms_elapsed is not reset to 0 here. Resetting it would make the next
+        // interrupt (count = 1) satisfy the "% 10 == 1" check again and call Reflectance_Sensor_End()
+        // without a Reflectance_Sensor_Start(), overwriting the valid sample with 0000_0000.
     }
 }
 
@@ -272,22 +282,7 @@ Robot_State Get_Next_Line_State(Robot_State state)
     }
 }
 
-/**
- * @brief Interrupt service routine for the SysTick timer, which runs the Line Follower FSM.
- *
- * The SysTick_Handler is executed every 1 ms. It uses a switch statement on current_state
- * to drive the motors for the current state and then determines the next state.
- *  - MOVE_FORWARD:  Both motors move forward
- *  - MOVE_TO_LEFT:  The robot rotates left to bring the line back to the center
- *  - MOVE_TO_RIGHT: The robot rotates right to bring the line back to the center
- *  - TURN_AROUND:   The robot spins in place for at least TURN_AROUND_MIN_MS,
- *                   then returns to line following once the line is centered again
- *  - STOP:          The motors are stopped after the robot reaches the dead end
- *
- * @param None
- *
- * @return None
- */
+
 void SysTick_Handler(void)
 {
     switch(current_state)
@@ -372,8 +367,26 @@ int main(void)
     // Enable the interrupts used by the modules
     EnableInterrupts();
 
+#if DEBUG_PRINT
+    // Names of the FSM states, indexed by Robot_State
+    const char *state_names[] = {"MOVE_FORWARD", "MOVE_TO_LEFT", "MOVE_TO_RIGHT", "TURN_AROUND", "STOP"};
+    uint8_t last_data = 0xAA;
+    Robot_State last_state = STOP;
+#endif
+
     while(1)
     {
-
+#if DEBUG_PRINT
+        // Print only when the sensor data or the FSM state changes
+        uint8_t data = reflectance_data;
+        Robot_State state = current_state;
+        if ((data != last_data) || (state != last_state))
+        {
+            Print_Binary(data);
+            printf("    Position: %d  State: %s\n", (int)line_position, state_names[state]);
+            last_data = data;
+            last_state = state;
+        }
+#endif
     }
 }
